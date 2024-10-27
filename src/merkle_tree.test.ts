@@ -1,10 +1,11 @@
-import { MerkleTree, HashPath } from '.';
+import { DbMerkleTree, HashPath } from '.';
 import { Sha256Hasher } from './sha256_hasher';
 import levelup from 'levelup';
 import memdown from 'memdown';
 
 describe('merkle_tree', () => {
   const values: Buffer[] = [];
+  const hasher = new Sha256Hasher();
 
   beforeAll(async () => {
     for (let i = 0; i < 1024; ++i) {
@@ -16,7 +17,7 @@ describe('merkle_tree', () => {
 
   it('should have correct empty tree root for depth 32', async () => {
     const db = levelup(memdown());
-    const tree = await MerkleTree.new(db, 'test', 32);
+    const tree = await DbMerkleTree.new(db, 'test', hasher,32);
     const root = tree.getRoot();
     expect(root.toString('hex')).toEqual('1c9a7e5ff1cf48b4ad1582d3f4e4a1004f3b20d8c5a2b71387a4254ad933ebc5');
   });
@@ -24,7 +25,7 @@ describe('merkle_tree', () => {
   it('should have correct root', async () => {
     const db = levelup(memdown());
 
-    const hasher = new Sha256Hasher();
+    
     const e00 = hasher.hash(values[0]);
     const e01 = hasher.hash(values[1]);
     const e02 = hasher.hash(values[2]);
@@ -33,7 +34,7 @@ describe('merkle_tree', () => {
     const e11 = hasher.compress(e02, e03);
     const root = hasher.compress(e10, e11);
 
-    const tree = await MerkleTree.new(db, 'test', 2);
+    const tree = await DbMerkleTree.new(db, 'test', hasher,2);
 
     for (let i = 0; i < 4; ++i) {
       await tree.updateElement(i, values[i]);
@@ -62,14 +63,13 @@ describe('merkle_tree', () => {
   it('should be able to restore from previous data', async () => {
     const levelDown = memdown();
     const db = levelup(levelDown);
-    const tree = await MerkleTree.new(db, 'test', 10);
+    const tree = await DbMerkleTree.new(db, 'test',hasher, 10);
     for (let i = 0; i < 128; ++i) {
       await tree.updateElement(i, values[i]);
     }
-
     const db2 = levelup(levelDown);
-    const tree2 = await MerkleTree.new(db2, 'test');
-
+    const tree2 = await DbMerkleTree.new(db2, 'test',hasher);
+    console.log(tree.getRoot());
     expect(tree.getRoot().toString('hex')).toBe('4b8404d05a963de56f7212fbf8123204b1eb77a4cb16ae3875679a898aaa5daa');
     expect(tree.getRoot()).toEqual(tree2.getRoot());
     for (let i = 0; i < 128; ++i) {
@@ -79,7 +79,7 @@ describe('merkle_tree', () => {
 
   it('should have correct results inserting 1024 values into 32 depth tree.', async () => {
     const db = levelup(memdown());
-    const tree = await MerkleTree.new(db, 'test', 32);
+    const tree = await DbMerkleTree.new(db, 'test',hasher, 32);
 
     for (let i = 0; i < values.length; ++i) {
       await tree.updateElement(i, values[i]);

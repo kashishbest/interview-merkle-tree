@@ -1,48 +1,43 @@
 import { LevelUp, LevelUpChain } from 'levelup';
+import subleveldown from 'subleveldown';
 import { HashPath } from './hash_path';
-import { Sha256Hasher } from './sha256_hasher';
+import { MerkleTree} from './core/merkle_tree'
+import { Hasher } from './hasher';
 
 const MAX_DEPTH = 32;
 const LEAF_BYTES = 64; // All leaf values are 64 bytes.
 
-/**
- * The merkle tree, in summary, is a data structure with a number of indexable elements, and the property
- * that it is possible to provide a succinct proof (HashPath) that a given piece of data, exists at a certain index,
- * for a given merkle tree root.
- */
-export class MerkleTree {
-  private hasher = new Sha256Hasher();
-  private root = Buffer.alloc(32);
+export class DbMerkleTree {
 
-  /**
-   * Constructs a new MerkleTree instance, either initializing an empty tree, or restoring pre-existing state values.
-   * Use the async static `new` function to construct.
-   *
-   * @param db Underlying leveldb.
-   * @param name Name of the tree, to be used when restoring/persisting state.
-   * @param depth The depth of the tree, to be no greater than MAX_DEPTH.
-   * @param root When restoring, you need to provide the root.
-   */
-  constructor(private db: LevelUp, private name: string, private depth: number, root?: Buffer) {
+  private itemsDb: LevelUp;
+  private inMemoryTree: MerkleTree;
+
+  constructor(private db: LevelUp, private name: string, private depth: number, private hasher: Hasher) {
     if (!(depth >= 1 && depth <= MAX_DEPTH)) {
       throw Error('Bad depth');
     }
+    this.name = name;
+    this.depth = depth;
+    this.hasher = hasher;
+    this.inMemoryTree = new MerkleTree(this.hasher, depth,LEAF_BYTES);
 
-    // Missing implementation.
+    this.db = db;
+    this.itemsDb = subleveldown(db, name);
   }
 
-  /**
-   * Constructs or restores a new MerkleTree instance with the given `name` and `depth`.
-   * The `db` contains the tree data.
-   */
-  static async new(db: LevelUp, name: string, depth = MAX_DEPTH) {
+  static async new(db: LevelUp, name: string, hasher: Hasher, depth = MAX_DEPTH) {
     const meta: Buffer = await db.get(Buffer.from(name)).catch(() => {});
     if (meta) {
       const root = meta.slice(0, 32);
       const depth = meta.readUInt32LE(32);
-      return new MerkleTree(db, name, depth, root);
+      const tree = new DbMerkleTree(db, name, depth,hasher);
+      await tree.restoreElements();
+      if (!tree.getRoot().equals(root)) {
+        throw Error('Root mismatch');
+      }
+      return tree;
     } else {
-      const tree = new MerkleTree(db, name, depth);
+      const tree = new DbMerkleTree(db, name, depth, hasher);
       await tree.writeMetaData();
       return tree;
     }
@@ -50,7 +45,7 @@ export class MerkleTree {
 
   private async writeMetaData(batch?: LevelUpChain<string, Buffer>) {
     const data = Buffer.alloc(40);
-    this.root.copy(data);
+    this.getRoot().copy(data);
     data.writeUInt32LE(this.depth, 32);
     if (batch) {
       batch.put(this.name, data);
@@ -59,28 +54,37 @@ export class MerkleTree {
     }
   }
 
+  private async restoreElements() {
+    return new Promise((resolve, reject) => {
+      const stream = this.itemsDb.createReadStream();
+      stream.on('data', (data) => {
+        const index = parseInt(data.key.toString());
+        this.inMemoryTree.set(this.elementTreeIndex(index), Buffer.from(data.value, 'hex'));
+      });
+      stream.on('end', resolve);
+      stream.on('error', reject);
+    });
+  }
+
   getRoot() {
-    return this.root;
+    return this.inMemoryTree.getRoot();
   }
 
-  /**
-   * Returns the hash path for `index`.
-   * e.g. To return the HashPath for index 2, return the nodes marked `*` at each layer.
-   *     d3:                                            [ root ]
-   *     d2:                      [*]                                               [*]
-   *     d1:         [*]                      [*]                       [ ]                     [ ]
-   *     d0:   [ ]         [ ]          [*]         [*]           [ ]         [ ]          [ ]        [ ]
-   */
   async getHashPath(index: number) {
-    // Missing implementation.
-    return new HashPath();
+    return new HashPath(this.inMemoryTree.getPath(this.elementTreeIndex(index)));
   }
 
-  /**
-   * Updates the tree with `value` at `index`. Returns the new tree root.
-   */
   async updateElement(index: number, value: Buffer) {
-    // Missing implementation.
-    return this.root;
+    const hash = this.hasher.hash(value);
+    this.inMemoryTree.set(this.elementTreeIndex(index), hash);
+
+    await this.itemsDb.put(index.toString(), hash.toString('hex'));
+    await this.writeMetaData();
+
+    return this.getRoot();
+  }
+
+  private elementTreeIndex(index: number) {
+    return index + Math.pow(2, this.depth) - 1;
   }
 }
